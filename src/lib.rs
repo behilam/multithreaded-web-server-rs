@@ -1,8 +1,15 @@
-use std::{fmt, thread};
+use std::{
+    fmt,
+    sync::{mpsc, Arc, Mutex},
+    thread,
+};
 
 pub struct ThreadPool {
-    threads: Vec<thread::JoinHandle<()>>,
+    workers: Vec<Worker>,
+    tx: mpsc::Sender<Job>,
 }
+
+type Job = Box<dyn FnOnce() + Send + 'static>;
 
 pub struct PoolCreationError {
     pub message: String,
@@ -42,23 +49,41 @@ impl ThreadPool {
             });
         }
 
-        let mut threads = Vec::with_capacity(size);
+        let (tx, rx) = mpsc::channel();
+        let rx = Arc::new(Mutex::new(rx));
+        let mut workers = Vec::with_capacity(size);
 
-        for _ in 0..size {
-            todo!();
+        for id in 0..size {
+            workers.push(Worker::new(id, Arc::clone(&rx)));
         }
 
-        Ok(ThreadPool { threads })
-    }
-
-    pub fn hi() {
-        println!("Holi");
+        Ok(ThreadPool { workers, tx })
     }
 
     pub fn execute<F>(&self, f: F)
     where
         F: FnOnce() + Send + 'static,
     {
-        println!("Execute");
+        let job = Box::new(f);
+
+        self.tx.send(job).unwrap();
+    }
+}
+
+struct Worker {
+    id: usize,
+    thread: thread::JoinHandle<()>,
+}
+
+impl Worker {
+    fn new(id: usize, rx: Arc<Mutex<mpsc::Receiver<Job>>>) -> Worker {
+        let thread = thread::spawn(move || loop {
+            let job = rx.lock().expect("Mutex is poisoned").recv().unwrap();
+            println!("Worker {id} got a job; executing...");
+
+            job();
+        });
+
+        Worker { id, thread }
     }
 }
