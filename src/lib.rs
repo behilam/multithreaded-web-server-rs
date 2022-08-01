@@ -6,10 +6,15 @@ use std::{
 
 pub struct ThreadPool {
     workers: Vec<Worker>,
-    tx: mpsc::Sender<Job>,
+    tx: mpsc::Sender<Message>,
 }
 
 type Job = Box<dyn FnOnce() + Send + 'static>;
+
+enum Message {
+    NewJob(Job),
+    Terminate,
+}
 
 pub struct PoolCreationError {
     pub message: String,
@@ -66,12 +71,20 @@ impl ThreadPool {
     {
         let job = Box::new(f);
 
-        self.tx.send(job).unwrap();
+        self.tx.send(Message::NewJob(job)).unwrap();
     }
 }
 
 impl Drop for ThreadPool {
     fn drop(&mut self) {
+        println!("Sending terminate message to all workers.");
+
+        for _ in &self.workers {
+            self.tx.send(Message::Terminate).unwrap();
+        }
+
+        println!("Shutting down all workers.");
+
         for worker in &mut self.workers {
             println!("Shutting down worker {}", worker.id);
 
@@ -88,12 +101,22 @@ struct Worker {
 }
 
 impl Worker {
-    fn new(id: usize, rx: Arc<Mutex<mpsc::Receiver<Job>>>) -> Worker {
+    fn new(id: usize, rx: Arc<Mutex<mpsc::Receiver<Message>>>) -> Worker {
         let thread = thread::spawn(move || loop {
-            let job = rx.lock().expect("Mutex is poisoned").recv().unwrap();
-            println!("Worker {id} got a job; executing...");
+            let message = rx.lock().expect("Mutex is poisoned").recv().unwrap();
 
-            job();
+            match message {
+                Message::NewJob(job) => {
+                    println!("Worker {} got a job; executing.", id);
+
+                    job();
+                }
+                Message::Terminate => {
+                    println!("Worker {} was told to terminate.", id);
+
+                    break;
+                }
+            }
         });
 
         Worker {
